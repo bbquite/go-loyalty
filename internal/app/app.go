@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"log"
 
 	"github.com/bbquite/go-loyalty/internal/handlers"
@@ -9,7 +10,7 @@ import (
 )
 
 func Run() {
-	// ctx := context.Background()
+	ctx := context.Background()
 
 	appLogger, err := InitLogger()
 	if err != nil {
@@ -18,12 +19,13 @@ func Run() {
 
 	appCfg := InitConfig(appLogger)
 
-	db, err := storage.NewDBStorage(appCfg.DatabaseURI)
+	dbStorage, err := storage.NewDBStorage(ctx, appCfg.DatabaseURI)
 	if err != nil {
 		log.Fatalf("database connection error: %v", err)
 	}
+	defer dbStorage.Db.Close()
 
-	appService := services.NewAppService(db)
+	appService := services.NewAppService(dbStorage, appLogger)
 
 	handler, err := handlers.NewHandler(appService, appLogger)
 	if err != nil {

@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/bbquite/go-loyalty/internal/middleware"
+	"github.com/bbquite/go-loyalty/internal/models"
 	"github.com/bbquite/go-loyalty/internal/services"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -31,7 +35,7 @@ func (h *Handler) InitRoutes() *chi.Mux {
 		r.Post("/register/", h.registerUser)
 		r.Post("/login/", h.loginUser)
 		r.Route("/orders/", func(r chi.Router) {
-			r.Post("/", h.orderSend)
+			r.Post("/", middleware.TestMW(h.orderSend))
 			r.Get("/", h.ordersList)
 		})
 		r.Route("/balance/", func(r chi.Router) {
@@ -45,7 +49,36 @@ func (h *Handler) InitRoutes() *chi.Mux {
 }
 
 func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
-	h.services.RegisterUser()
+
+	var buf bytes.Buffer
+	var reqData models.UserLoginData
+
+	_, err := buf.ReadFrom(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err = json.Unmarshal(buf.Bytes(), &reqData); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.logger.Info(err)
+		return
+	}
+
+	token, err := h.services.RegisterUser(&reqData)
+	if err != nil {
+		if errors.Is(err, services.ErrUserAlreadyExists) {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		h.logger.Error(err)
+	}
+
+	msg, _ := json.Marshal(token)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(msg)
 }
 
 func (h *Handler) loginUser(w http.ResponseWriter, r *http.Request) {
