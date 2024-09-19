@@ -11,18 +11,21 @@ import (
 const ACCESS_TOKEN_EXPIRY_HOUR = time.Hour * 3
 const ACCESS_TOKEN_SECRET = "goloyaltydiplomsecter"
 
+var ()
+
 type JWT struct {
 	Token string `json:"token"`
 }
 
 type Claims struct {
 	jwt.RegisteredClaims
-	UserID string
+	Userid uint32
 }
 
-func CreateAccessToken(userid int64) (accessToken string, err error) {
+func CreateAccessToken(userid uint32) (accessToken string, err error) {
+	log.Printf("create token func user_id: %d", userid)
 	claims := &Claims{
-		UserID: string(userid),
+		Userid: userid,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ACCESS_TOKEN_EXPIRY_HOUR)),
 		},
@@ -48,8 +51,8 @@ func IsAuthorized(requestToken string) (bool, error) {
 	return true, nil
 }
 
-func ExtractIDFromToken(requestToken string) (string, error) {
-	token, err := jwt.Parse(requestToken, func(token *jwt.Token) (interface{}, error) {
+func ExtractIDFromToken(requestToken string) (uint32, error) {
+	token, err := jwt.ParseWithClaims(requestToken, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -57,16 +60,13 @@ func ExtractIDFromToken(requestToken string) (string, error) {
 	})
 
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
-	claims, ok := token.Claims.(jwt.MapClaims)
-
-	if !ok && !token.Valid {
-		return "", fmt.Errorf("invalid Token")
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		userID := claims.Userid
+		return userID, nil
 	}
 
-	log.Print(claims)
-
-	return claims["UserID"].(string), nil
+	return 0, fmt.Errorf("invalid Token")
 }

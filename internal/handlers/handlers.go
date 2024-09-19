@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/EClaesson/go-luhn"
 	"github.com/bbquite/go-loyalty/internal/middleware"
 	"github.com/bbquite/go-loyalty/internal/models"
 	"github.com/bbquite/go-loyalty/internal/services"
+	"github.com/bbquite/go-loyalty/internal/utils"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -29,20 +31,20 @@ func (h *Handler) InitRoutes() *chi.Mux {
 	chiRouter := chi.NewRouter()
 
 	chiRouter.Use(middleware.RequestsLoggingMiddleware(h.logger))
-	chiRouter.Use(middleware.GzipMiddleware)
+	// chiRouter.Use(middleware.GzipMiddleware)
 
 	chiRouter.Route("/api/user/", func(r chi.Router) {
 		r.Post("/register/", h.registerUser)
 		r.Post("/login/", h.loginUser)
 		r.Route("/orders/", func(r chi.Router) {
-			r.Post("/", middleware.TestMW(h.orderSend))
-			r.Get("/", h.ordersList)
+			r.Post("/", middleware.TokenAuthMiddleware(h.sendPurchase))
+			r.Get("/", middleware.TokenAuthMiddleware(h.purchasesList))
 		})
 		r.Route("/balance/", func(r chi.Router) {
-			r.Get("/", h.userBalance)
-			r.Post("/withdraw/", h.userBalanceWithdraw)
+			r.Get("/", middleware.TokenAuthMiddleware(h.userBalance))
+			r.Post("/withdraw/", middleware.TokenAuthMiddleware(h.userBalanceWithdraw))
 		})
-		r.Get("/withdrawals/", h.withdrawHistory)
+		r.Get("/withdrawals/", middleware.TokenAuthMiddleware(h.withdrawHistory))
 	})
 
 	return chiRouter
@@ -72,6 +74,8 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
 	msg, _ := json.Marshal(token)
@@ -82,15 +86,82 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) loginUser(w http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	var reqData models.UserLoginData
+
+	_, err := buf.ReadFrom(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err = json.Unmarshal(buf.Bytes(), &reqData); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.logger.Info(err)
+		return
+	}
+
+	token, err := h.services.LoginUser(&reqData)
+	if err != nil {
+		if errors.Is(err, services.ErrIncorrectLoginData) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	msg, _ := json.Marshal(token)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(msg)
+}
+
+func (h *Handler) sendPurchase(w http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+
+	_, err := buf.ReadFrom(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
+	orderID := buf.String()
+
+	orderValid, err := luhn.IsValid(orderID)
+	if err != nil {
+		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if !orderValid {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
+
+	err = h.services.RequestPurchase(accountID, orderID)
+
+	h.logger.Debug(err)
 
 }
 
-func (h *Handler) orderSend(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) purchasesList(w http.ResponseWriter, r *http.Request) {
+	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
+	tt, err := h.services.PurchasesList(accountID)
+	if err != nil {
+		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	msg, _ := json.Marshal(tt)
 
-}
-
-func (h *Handler) ordersList(w http.ResponseWriter, r *http.Request) {
-
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(msg)
 }
 
 func (h *Handler) userBalance(w http.ResponseWriter, r *http.Request) {
