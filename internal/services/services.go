@@ -3,15 +3,17 @@ package services
 import (
 	"database/sql"
 	"errors"
-
 	"github.com/bbquite/go-loyalty/internal/models"
 	"github.com/bbquite/go-loyalty/internal/utils"
 	"go.uber.org/zap"
 )
 
 var (
-	ErrUserAlreadyExists  = errors.New("the user already exists")
+	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrIncorrectLoginData = errors.New("incorrect login or password")
+
+	ErrPurchaseAlreadySend = errors.New("purchase already exists")
+	ErrPurchaseConflict    = errors.New("purchase conflict with another user")
 )
 
 type StorageRepo interface {
@@ -19,6 +21,10 @@ type StorageRepo interface {
 	GetAccountByUsername(username string) (models.Account, error)
 	GetAccountByLoginData(username string, password string) (models.Account, error)
 
+	GetAccountBalance(accountID uint32) (models.Balance, error)
+	GetAccountBalanceHistory(accountID uint32, trType string) ([]models.BalanceHistory, error)
+
+	GetPurchase(purchaseID string) (models.Purchase, error)
 	CreatePurchase(accountID uint32, purchaseID string) error
 	GetPurchasesList(accountID uint32) ([]models.Purchase, error)
 }
@@ -83,12 +89,40 @@ func (service *AppService) LoginUser(userData *models.UserLoginData) (utils.JWT,
 	return token, nil
 }
 
-func (service *AppService) RequestPurchase(accountID uint32, purchaseID string) error {
-	err := service.store.CreatePurchase(accountID, purchaseID)
+func (service *AppService) GetAccountBalance(accountID uint32) (models.Balance, error) {
+	response, err := service.store.GetAccountBalance(accountID)
 	if err != nil {
+		return models.Balance{}, err
+	}
+	return response, nil
+}
+
+func (service *AppService) GetAccountBalanceHistory(accountID uint32, trType string) ([]models.BalanceHistory, error) {
+	response, err := service.store.GetAccountBalanceHistory(accountID, trType)
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (service *AppService) SendPurchase(accountID uint32, purchaseID string) error {
+
+	purchase, err := service.store.GetPurchase(purchaseID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			err := service.store.CreatePurchase(accountID, purchaseID)
+			if err != nil {
+				return err
+			}
+			return nil
+		}
 		return err
 	}
-	return nil
+
+	if purchase.AccountID == accountID {
+		return ErrPurchaseAlreadySend
+	}
+	return ErrPurchaseConflict
 }
 
 func (service *AppService) PurchasesList(accountID uint32) ([]models.Purchase, error) {

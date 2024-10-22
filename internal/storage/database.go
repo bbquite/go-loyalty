@@ -12,7 +12,6 @@ import (
 type DBStorage struct {
 	Db  *sql.DB
 	ctx context.Context
-	// mx sync.RWMutex
 }
 
 func NewDBStorage(ctx context.Context, databaseURI string) (*DBStorage, error) {
@@ -71,25 +70,104 @@ func (storage *DBStorage) CreateAccount(username string, password string) (uint3
 		VALUES ($1, $2)
 		RETURNING id
 	`
-	// pgx не поддерживает LastInsertId
-	// result, err := storage.Db.ExecContext(storage.ctx, sqlString, username, password)
 
 	var userID uint32
 	row := storage.Db.QueryRowContext(storage.ctx, sqlString, username, password)
-	row.Scan(&userID)
+	err := row.Scan(&userID)
+	if err != nil {
+		return 0, err
+	}
 
 	if userID == 0 {
 		return 0, errors.New("unspecified error while creating record")
 	}
 
+	sqlStringBalance := `
+		INSERT INTO balance (account_id) 
+		VALUES ($1)
+	`
+
+	_, err = storage.Db.ExecContext(storage.ctx, sqlStringBalance, userID)
+	if err != nil {
+		return 0, err
+	}
+
 	return userID, nil
+}
+
+func (storage *DBStorage) GetAccountBalance(accountID uint32) (models.Balance, error) {
+	var balance models.Balance
+
+	sqlString := `
+		SELECT amount, withdrawn
+		FROM balance 
+		WHERE account_id = $1
+		LIMIT 1
+	`
+
+	row := storage.Db.QueryRowContext(storage.ctx, sqlString, accountID)
+	err := row.Scan(&balance.Amount, &balance.Withdrawn)
+	if err != nil {
+		return balance, err
+	}
+
+	return balance, nil
+}
+
+func (storage *DBStorage) GetAccountBalanceHistory(accountID uint32, trType string) ([]models.BalanceHistory, error) {
+
+	var result []models.BalanceHistory
+
+	sqlString := `
+		SELECT purchase_id, amount, processed_at
+		FROM balance_history 
+		WHERE account_id = $1 AND transaction_type = $2
+		ORDER BY processed_at ASC
+	`
+
+	rows, err := storage.Db.QueryContext(storage.ctx, sqlString, accountID, trType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var balanceItem models.BalanceHistory
+
+		err = rows.Scan(&balanceItem.PurchaseID, &balanceItem.Amount, &balanceItem.ProcessedAt)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, balanceItem)
+	}
+
+	return result, nil
+}
+
+func (storage *DBStorage) GetPurchase(purchaseID string) (models.Purchase, error) {
+	var purchase models.Purchase
+
+	sqlString := `
+		SELECT id, account_id, purchase_num, purchase_status, uploaded_at
+		FROM purchase 
+		WHERE purchase_num = $1
+		LIMIT 1
+	`
+
+	row := storage.Db.QueryRowContext(storage.ctx, sqlString, purchaseID)
+	err := row.Scan(&purchase.Id, &purchase.AccountID, &purchase.PurchaseNum, &purchase.PurchaseStatus, &purchase.UploadedAt)
+	if err != nil {
+		return purchase, err
+	}
+
+	return purchase, nil
 }
 
 func (storage *DBStorage) CreatePurchase(accountID uint32, purchaseID string) error {
 	sqlString := `
 		INSERT INTO purchase (account_id, purchase_num, purchase_status) 
 		VALUES ($1, $2, $3)
-		RETURNING id
 	`
 	_, err := storage.Db.ExecContext(storage.ctx, sqlString, accountID, purchaseID, "NEW")
 	if err != nil {
@@ -107,9 +185,14 @@ func (storage *DBStorage) GetPurchasesList(accountID uint32) ([]models.Purchase,
 		SELECT purchase_num, purchase_status, uploaded_at
 		FROM purchase 
 		WHERE account_id = $1
+		ORDER BY uploaded_at ASC
 	`
 
 	rows, err := storage.Db.QueryContext(storage.ctx, sqlString, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var purchaseItem models.Purchase
@@ -120,9 +203,6 @@ func (storage *DBStorage) GetPurchasesList(accountID uint32) ([]models.Purchase,
 		}
 
 		result = append(result, purchaseItem)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	return result, nil

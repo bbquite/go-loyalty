@@ -18,23 +18,30 @@ type Account struct {
 // }
 
 type Purchase struct {
-	// Id          uint32      `json:"id"`
-	// AccountID   uint32      `json:"account_id"`
+	Id             uint32    `json:"id,omitempty"`
+	AccountID      uint32    `json:"account_id,omitempty"`
 	PurchaseNum    string    `json:"number"`
 	PurchaseStatus string    `json:"status"`
 	UploadedAt     time.Time `json:"uploaded_at"`
 }
 
-// type TransactionType struct {
-// 	IN  string `json:"IN"`
-// 	OUT string `json:"OUT"`
-// }
+type Balance struct {
+	Id        uint32  `json:"id,omitempty"`
+	AccountId uint32  `json:"account_id,omitempty"`
+	Amount    float64 `json:"current"`
+	Withdrawn float64 `json:"withdrawn"`
+}
+
+//type TransactionType struct {
+//	IN  string `json:"IN"`
+//	OUT string `json:"OUT"`
+//}
 
 type BalanceHistory struct {
-	Id              uint32    `json:"id"`
-	AccountID       uint32    `json:"account_id"`
-	OrderID         uint32    `json:"order_id"`
-	Amount          uint32    `json:"amount"`
-	TransactionType string    `json:"transaction_type"`
+	Id              uint32    `json:"id,omitempty"`
+	AccountID       uint32    `json:"account_id,omitempty"`
+	PurchaseID      uint32    `json:"order"`
+	Amount          uint32    `json:"sum"`
+	TransactionType string    `json:"transaction_type,omitempty"`
 	ProcessedAt     time.Time `json:"processed_at"`
 }

@@ -14,7 +14,7 @@ CREATE TYPE purchase_status AS ENUM (
 create table public.purchase(
 	id serial primary key,
 	account_id integer not null,
-	purchase_num VARCHAR(255) not null,
+	purchase_num VARCHAR(255) not null unique,
     purchase_status purchase_status not null,
 	uploaded_at timestamp not null default CURRENT_TIMESTAMP,
 	FOREIGN KEY (account_id) REFERENCES public.account (id) ON DELETE CASCADE
@@ -23,10 +23,10 @@ create table public.purchase(
 create table public.balance(
     id serial primary key,
     account_id integer not null,
-    amount integer NOT NULL DEFAULT 0,
+    amount float NOT NULL DEFAULT 0,
     withdrawn integer NOT NULL DEFAULT 0,
     FOREIGN KEY (account_id) REFERENCES public.account (id) ON DELETE CASCADE
-)
+);
 
 CREATE TYPE transaction_type AS ENUM (
     'IN',
@@ -42,4 +42,4 @@ create table public.balance_history(
     processed_at TIMESTAMP NOT NULL default CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES public.account (id) ON DELETE CASCADE,
     FOREIGN KEY (purchase_id) REFERENCES public.purchase (id) ON DELETE CASCADE
-)
+);

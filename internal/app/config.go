@@ -12,7 +12,7 @@ import (
 const (
 	defRunAddress    string = "localhost:8081"
 	defAccuralAdress string = "localhost:8080"
-	defDatabase      string = "host=localhost user=postgres password=123 dbname=golang sslmode=disable"
+	defDatabase      string = ""
 )
 
 type Config struct {

@@ -12,6 +12,7 @@ import (
 	"github.com/bbquite/go-loyalty/internal/services"
 	"github.com/bbquite/go-loyalty/internal/utils"
 	"github.com/go-chi/chi/v5"
+	ChiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 )
 
@@ -30,27 +31,27 @@ func NewHandler(services *services.AppService, logger *zap.SugaredLogger) (*Hand
 func (h *Handler) InitRoutes() *chi.Mux {
 	chiRouter := chi.NewRouter()
 
-	chiRouter.Use(middleware.RequestsLoggingMiddleware(h.logger))
+	chiRouter.Use(ChiMiddleware.Logger)
 	// chiRouter.Use(middleware.GzipMiddleware)
 
 	chiRouter.Route("/api/user/", func(r chi.Router) {
-		r.Post("/register/", h.registerUser)
-		r.Post("/login/", h.loginUser)
+		r.Post("/register/", h.registerAccount)
+		r.Post("/login/", h.loginAccount)
 		r.Route("/orders/", func(r chi.Router) {
 			r.Post("/", middleware.TokenAuthMiddleware(h.sendPurchase))
 			r.Get("/", middleware.TokenAuthMiddleware(h.purchasesList))
 		})
 		r.Route("/balance/", func(r chi.Router) {
-			r.Get("/", middleware.TokenAuthMiddleware(h.userBalance))
-			r.Post("/withdraw/", middleware.TokenAuthMiddleware(h.userBalanceWithdraw))
+			r.Get("/", middleware.TokenAuthMiddleware(h.accountBalance))
+			r.Post("/withdraw/", middleware.TokenAuthMiddleware(h.accountBalanceWithdraw))
 		})
-		r.Get("/withdrawals/", middleware.TokenAuthMiddleware(h.withdrawHistory))
+		r.Get("/withdrawals/", middleware.TokenAuthMiddleware(h.accountWithdrawHistory))
 	})
 
 	return chiRouter
 }
 
-func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) registerAccount(w http.ResponseWriter, r *http.Request) {
 
 	var buf bytes.Buffer
 	var reqData models.UserLoginData
@@ -58,12 +59,19 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 	_, err := buf.ReadFrom(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.logger.Debug(err)
 		return
 	}
 
 	if err = json.Unmarshal(buf.Bytes(), &reqData); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		h.logger.Info(err)
+		h.logger.Debug(err)
+		return
+	}
+
+	if reqData.Username == "" || reqData.Password == "" {
+		http.Error(w, "invalid request format", http.StatusBadRequest)
+		h.logger.Debug(err)
 		return
 	}
 
@@ -81,11 +89,13 @@ func (h *Handler) registerUser(w http.ResponseWriter, r *http.Request) {
 	msg, _ := json.Marshal(token)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Authorization", "Bearer "+token.Token)
+
 	w.WriteHeader(http.StatusOK)
 	w.Write(msg)
 }
 
-func (h *Handler) loginUser(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) loginAccount(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 	var reqData models.UserLoginData
 
@@ -101,6 +111,12 @@ func (h *Handler) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if reqData.Username == "" || reqData.Password == "" {
+		http.Error(w, "invalid request format", http.StatusBadRequest)
+		h.logger.Debug(err)
+		return
+	}
+
 	token, err := h.services.LoginUser(&reqData)
 	if err != nil {
 		if errors.Is(err, services.ErrIncorrectLoginData) {
@@ -113,6 +129,23 @@ func (h *Handler) loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg, _ := json.Marshal(token)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Authorization", "Bearer "+token.Token)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(msg)
+}
+
+func (h *Handler) accountBalance(w http.ResponseWriter, r *http.Request) {
+	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
+	balance, err := h.services.GetAccountBalance(accountID)
+	if err != nil {
+		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	msg, _ := json.Marshal(balance)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -131,47 +164,82 @@ func (h *Handler) sendPurchase(w http.ResponseWriter, r *http.Request) {
 	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
 	orderID := buf.String()
 
+	if orderID == "" {
+		http.Error(w, "invalid request format", http.StatusUnprocessableEntity)
+		return
+	}
+
 	orderValid, err := luhn.IsValid(orderID)
 	if err != nil {
-		h.logger.Error(err)
-		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, "invalid request format", http.StatusUnprocessableEntity)
+		h.logger.Debug(err)
 		return
 	}
 
 	if !orderValid {
-		w.WriteHeader(http.StatusUnprocessableEntity)
+		http.Error(w, "invalid request format", http.StatusUnprocessableEntity)
 		return
 	}
 
-	err = h.services.RequestPurchase(accountID, orderID)
+	err = h.services.SendPurchase(accountID, orderID)
+	if err != nil {
+		h.logger.Debug(err)
+		if errors.Is(err, services.ErrPurchaseAlreadySend) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if errors.Is(err, services.ErrPurchaseConflict) {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	h.logger.Debug(err)
-
+	w.WriteHeader(http.StatusAccepted)
+	return
 }
 
 func (h *Handler) purchasesList(w http.ResponseWriter, r *http.Request) {
 	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
-	tt, err := h.services.PurchasesList(accountID)
+	purchaseList, err := h.services.PurchasesList(accountID)
 	if err != nil {
 		h.logger.Error(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	msg, _ := json.Marshal(tt)
+	if len(purchaseList) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	msg, _ := json.Marshal(purchaseList)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(msg)
 }
 
-func (h *Handler) userBalance(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) accountBalanceWithdraw(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (h *Handler) userBalanceWithdraw(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) accountWithdrawHistory(w http.ResponseWriter, r *http.Request) {
+	accountID := r.Context().Value(utils.AccountIDContextKey).(uint32)
+	balanceHistory, err := h.services.GetAccountBalanceHistory(accountID, "OUT")
+	if err != nil {
+		h.logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if len(balanceHistory) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
-}
+	msg, _ := json.Marshal(balanceHistory)
 
-func (h *Handler) withdrawHistory(w http.ResponseWriter, r *http.Request) {
-
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(msg)
 }
